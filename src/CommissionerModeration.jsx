@@ -11,6 +11,7 @@ export default function CommissionerModeration() {
   const [activeRound, setActiveRound] = useState(null);
   const [lockedVoters, setLockedVoters] = useState([]);
   const [ballotVoters, setBallotVoters] = useState([]);
+  const [lockedBallots, setLockedBallots] = useState([]);
   const [selectedVoter, setSelectedVoter] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState("");
@@ -28,18 +29,20 @@ export default function CommissionerModeration() {
     if (!round) {
       setLockedVoters([]);
       setBallotVoters([]);
+      setLockedBallots([]);
       return;
     }
 
     const [{ data: locks, error: locksError }, { data: ballots, error: ballotsError }] = await Promise.all([
       supabase.from("round_voter_locks").select("voter_name").eq("round_id", round.id),
-      supabase.from("tier_ballots").select("voter_name").eq("round_id", round.id),
+      supabase.from("tier_ballots").select("voter_name, ballot_locked").eq("round_id", round.id),
     ]);
     if (locksError) throw locksError;
     if (ballotsError) throw ballotsError;
 
     setLockedVoters((locks || []).map((row) => row.voter_name));
     setBallotVoters((ballots || []).map((row) => row.voter_name));
+    setLockedBallots((ballots || []).filter((row) => row.ballot_locked).map((row) => row.voter_name));
   };
 
   useEffect(() => {
@@ -99,6 +102,38 @@ export default function CommissionerModeration() {
       setMessage(`${selectedVoter} is now ${nextLocked ? "LOCKED OUT" : "ALLOWED TO VOTE"} for Week ${activeRound?.week}.`);
     } catch (e) {
       setMessage(e?.message || "Couldn't change that manager's lock.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const toggleBallotLock = async () => {
+    if (!selectedVoter || !activeRound) return;
+    if (!ballotVoters.includes(selectedVoter)) {
+      setMessage(`${selectedVoter} does not have a Week ${activeRound.week} ballot yet.`);
+      return;
+    }
+
+    const nextLocked = !lockedBallots.includes(selectedVoter);
+    const confirmed = window.confirm(
+      nextLocked
+        ? `Re-lock ${selectedVoter}'s Week ${activeRound.week} ballot? They will not be able to edit it.`
+        : `Unlock ${selectedVoter}'s Week ${activeRound.week} ballot? They will be able to edit it once; their next submission automatically locks it again.`
+    );
+    if (!confirmed) return;
+
+    setBusy("ballot");
+    setMessage("");
+    try {
+      await invokeAdmin("set_ballot_lock", { voter_name: selectedVoter, locked: nextLocked });
+      await loadState();
+      setMessage(
+        nextLocked
+          ? `${selectedVoter}'s Week ${activeRound.week} ballot is locked.`
+          : `${selectedVoter}'s Week ${activeRound.week} ballot is unlocked for one resubmission.`
+      );
+    } catch (e) {
+      setMessage(e?.message || "Couldn't change that ballot's lock.");
     } finally {
       setBusy("");
     }
@@ -166,7 +201,7 @@ export default function CommissionerModeration() {
 
           <section style={{ border: `1px solid ${line}`, borderRadius: 10, padding: 10 }}>
             <div style={{ ...mono, fontSize: 10, marginBottom: 5 }}>MANAGER MODERATION</div>
-            <div style={{ fontSize: 12, lineHeight: 1.4, color: "rgba(243,237,221,.58)", marginBottom: 8 }}>Delete an unserious ballot or lock a manager slot out of voting for this week.</div>
+            <div style={{ fontSize: 12, lineHeight: 1.4, color: "rgba(243,237,221,.58)", marginBottom: 8 }}>Submitted ballots lock automatically. You can unlock a ballot for one correction, delete it, or lock a manager slot out of voting for the week.</div>
 
             <select value={selectedVoter} onChange={(e) => setSelectedVoter(e.target.value)} style={{ width: "100%", boxSizing: "border-box", background: "#123723", border: `1px solid ${line}`, borderRadius: 8, padding: "9px 10px", color: selectedVoter ? cream : "rgba(243,237,221,.6)", marginBottom: 8 }}>
               <option value="">Select manager</option>
@@ -174,10 +209,19 @@ export default function CommissionerModeration() {
             </select>
 
             {selectedVoter && (
-              <div style={{ ...mono, fontSize: 9, color: "rgba(243,237,221,.5)", marginBottom: 8 }}>BALLOT: {ballotVoters.includes(selectedVoter) ? "SUBMITTED" : "NONE"} · STATUS: {lockedVoters.includes(selectedVoter) ? "LOCKED OUT" : "CAN VOTE"}</div>
+              <div style={{ ...mono, fontSize: 9, color: "rgba(243,237,221,.5)", marginBottom: 8 }}>
+                BALLOT: {ballotVoters.includes(selectedVoter) ? (lockedBallots.includes(selectedVoter) ? "SUBMITTED · LOCKED" : "SUBMITTED · UNLOCKED") : "NONE"} · MANAGER: {lockedVoters.includes(selectedVoter) ? "LOCKED OUT" : "CAN VOTE"}
+              </div>
             )}
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                disabled={!code || !selectedVoter || !ballotVoters.includes(selectedVoter) || Boolean(busy)}
+                onClick={toggleBallotLock}
+                style={buttonStyle(lockedBallots.includes(selectedVoter) ? "#7FB069" : "#D4A73D", line, mono, !code || !selectedVoter || !ballotVoters.includes(selectedVoter) || Boolean(busy))}
+              >
+                {busy === "ballot" ? "WORKING..." : lockedBallots.includes(selectedVoter) ? "UNLOCK BALLOT" : "RE-LOCK BALLOT"}
+              </button>
               <button disabled={!code || !selectedVoter || Boolean(busy)} onClick={deleteBallot} style={buttonStyle("#E63946", line, mono, !code || !selectedVoter || Boolean(busy))}>{busy === "delete" ? "DELETING..." : "DELETE BALLOT"}</button>
               <button disabled={!code || !selectedVoter || Boolean(busy)} onClick={toggleVoterLock} style={buttonStyle(lockedVoters.includes(selectedVoter) ? "#7FB069" : "#F1913D", line, mono, !code || !selectedVoter || Boolean(busy))}>{busy === "voter" ? "WORKING..." : lockedVoters.includes(selectedVoter) ? "UNLOCK MANAGER" : "LOCK MANAGER"}</button>
             </div>
