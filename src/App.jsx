@@ -67,6 +67,7 @@ export default function TierListApp() {
   const [allVotes, setAllVotes] = useState({});
   const [resultsLoading, setResultsLoading] = useState(false);
   const [hasVotedBefore, setHasVotedBefore] = useState(false);
+  const [ballotLocked, setBallotLocked] = useState(false);
   const [expandedVoter, setExpandedVoter] = useState(null);
   const [commissionerOpen, setCommissionerOpen] = useState(false);
   const [commissionerCode, setCommissionerCode] = useState("");
@@ -131,12 +132,13 @@ export default function TierListApp() {
     if (!name || !round) {
       setAssignments({});
       setHasVotedBefore(false);
+      setBallotLocked(false);
       return;
     }
 
     const { data, error: loadError } = await supabase
       .from("tier_ballots")
-      .select("voter_name, assignments")
+      .select("voter_name, assignments, ballot_locked")
       .eq("round_id", round.id)
       .eq("voter_name", name)
       .maybeSingle();
@@ -144,6 +146,7 @@ export default function TierListApp() {
     if (loadError) {
       setAssignments({});
       setHasVotedBefore(false);
+      setBallotLocked(false);
       setError(`Couldn't load ballot: ${loadError.message}`);
       return;
     }
@@ -151,11 +154,13 @@ export default function TierListApp() {
     if (data) {
       setAssignments(sanitizeAssignments(data.assignments, name));
       setHasVotedBefore(true);
+      setBallotLocked(Boolean(data.ballot_locked));
       return;
     }
 
     setAssignments({});
     setHasVotedBefore(false);
+    setBallotLocked(false);
   };
 
   const handleVoterChange = async (name) => {
@@ -166,12 +171,13 @@ export default function TierListApp() {
   };
 
   const assignTeamToTier = (teamName, tierKey) => {
-    if (!voterName || teamName === voterName) return;
+    if (!voterName || teamName === voterName || ballotLocked) return;
     setAssignments((prev) => ({ ...prev, [teamName]: tierKey }));
     setSelectedTeam(null);
   };
 
   const clearAssignment = (teamName) => {
+    if (ballotLocked) return;
     setAssignments((prev) => {
       const next = { ...prev };
       delete next[teamName];
@@ -182,6 +188,7 @@ export default function TierListApp() {
   const submitVote = async () => {
     if (!activeRound) return setError("There isn't an active ranking week right now.");
     if (!voterName) return setError("Select your name first.");
+    if (ballotLocked) return setError("This ballot is locked. Only the commissioner can unlock it.");
 
     const cleanAssignments = sanitizeAssignments(assignments, voterName);
     if (Object.keys(cleanAssignments).length !== LEAGUE_MEMBERS.length - 1) {
@@ -196,6 +203,7 @@ export default function TierListApp() {
           round_id: activeRound.id,
           voter_name: voterName,
           assignments: cleanAssignments,
+          ballot_locked: true,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "round_id,voter_name" }
@@ -203,6 +211,7 @@ export default function TierListApp() {
       if (saveError) throw saveError;
       setAssignments(cleanAssignments);
       setHasVotedBefore(true);
+      setBallotLocked(true);
       setResultsRound(activeRound);
       await loadResults(activeRound);
       setPhase("results");
@@ -285,6 +294,7 @@ export default function TierListApp() {
       setVoterName("");
       setAssignments({});
       setHasVotedBefore(false);
+      setBallotLocked(false);
       setSelectedTeam(null);
       setAllVotes({});
       setExpandedVoter(null);
@@ -356,7 +366,13 @@ export default function TierListApp() {
             {LEAGUE_MEMBERS.map((name) => <option key={name} value={name}>{name}</option>)}
           </select>
 
-          {hasVotedBefore && <div style={{ ...monoFont, fontSize: 11, color: "#7FB069", marginBottom: 10 }}>Loaded your Week {activeRound?.week} ballot — adjust and resubmit anytime while this week is open.</div>}
+          {hasVotedBefore && (
+            <div style={{ ...monoFont, fontSize: 11, color: ballotLocked ? "#F1913D" : "#7FB069", marginBottom: 10 }}>
+              {ballotLocked
+                ? `Week ${activeRound?.week} ballot submitted — LOCKED. Only the commissioner can unlock it.`
+                : `Commissioner unlocked your Week ${activeRound?.week} ballot — make your changes and resubmit. It will lock again automatically.`}
+            </div>
+          )}
 
           {!voterName ? (
             <div style={{ border: `1px dashed ${line}`, borderRadius: 12, padding: "28px 16px", textAlign: "center", color: "rgba(243,237,221,0.5)", fontSize: 13 }}>Select your name to begin ranking the other 11 managers.</div>
@@ -365,12 +381,12 @@ export default function TierListApp() {
               <div style={{ ...monoFont, fontSize: 11, color: gold, letterSpacing: 2, margin: "12px 0 6px" }}>TAP A TEAM, THEN TAP ITS TIER</div>
               <h2 style={{ ...displayFont, fontSize: 24, margin: "0 0 14px", color: cream }}>Build your tier list</h2>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: 12, background: "rgba(243,237,221,0.04)", border: `1px solid ${line}`, borderRadius: 12, marginBottom: 16, minHeight: 44 }}>
-                {unrankedTeams.length === 0 ? <span style={{ fontSize: 13, color: "rgba(243,237,221,0.4)" }}>All 11 teams ranked ✓</span> : unrankedTeams.map((team) => <Chip key={team} label={team} active={selectedTeam === team} onClick={() => setSelectedTeam(selectedTeam === team ? null : team)} gold={gold} cream={cream} />)}
+                {unrankedTeams.length === 0 ? <span style={{ fontSize: 13, color: "rgba(243,237,221,0.4)" }}>All 11 teams ranked ✓</span> : unrankedTeams.map((team) => <Chip key={team} label={team} active={selectedTeam === team} onClick={() => !ballotLocked && setSelectedTeam(selectedTeam === team ? null : team)} gold={gold} cream={cream} />)}
               </div>
 
               <div style={{ display: "grid", gap: 6 }}>
                 {TIERS.map((tier) => (
-                  <div key={tier.key} onClick={() => selectedTeam && assignTeamToTier(selectedTeam, tier.key)} style={{ display: "flex", alignItems: "stretch", border: `1px solid ${line}`, borderRadius: 10, overflow: "hidden", cursor: selectedTeam ? "pointer" : "default", background: selectedTeam ? "rgba(243,237,221,0.03)" : "transparent" }}>
+                  <div key={tier.key} onClick={() => !ballotLocked && selectedTeam && assignTeamToTier(selectedTeam, tier.key)} style={{ display: "flex", alignItems: "stretch", border: `1px solid ${line}`, borderRadius: 10, overflow: "hidden", cursor: !ballotLocked && selectedTeam ? "pointer" : "default", background: !ballotLocked && selectedTeam ? "rgba(243,237,221,0.03)" : "transparent" }}>
                     <div style={{ ...displayFont, width: 56, flexShrink: 0, background: tier.color, color: "#12200f", fontSize: 26, display: "flex", alignItems: "center", justifyContent: "center" }}>{tier.key}</div>
                     <div style={{ flex: 1, padding: "8px 10px", minHeight: 52 }}>
                       <div style={{ ...monoFont, fontSize: 9, letterSpacing: 1.5, color: "rgba(243,237,221,0.4)", marginBottom: 4 }}>{tier.label}</div>
@@ -383,8 +399,8 @@ export default function TierListApp() {
               </div>
 
               {error && <div style={{ color: "#F1913D", fontSize: 13, marginTop: 14 }}>{error}</div>}
-              <button onClick={submitVote} disabled={saving} style={{ marginTop: 18, width: "100%", background: rankedCount === targetCount ? gold : "rgba(243,237,221,0.15)", border: "none", borderRadius: 10, padding: 14, color: rankedCount === targetCount ? "#12200f" : "rgba(243,237,221,0.5)", fontWeight: 700, fontSize: 15, cursor: saving ? "wait" : "pointer", letterSpacing: 0.5 }}>
-                {saving ? "SUBMITTING..." : `SUBMIT BALLOT (${rankedCount}/${targetCount} RANKED)`}
+              <button onClick={submitVote} disabled={saving || ballotLocked} style={{ marginTop: 18, width: "100%", background: !ballotLocked && rankedCount === targetCount ? gold : "rgba(243,237,221,0.15)", border: "none", borderRadius: 10, padding: 14, color: !ballotLocked && rankedCount === targetCount ? "#12200f" : "rgba(243,237,221,0.5)", fontWeight: 700, fontSize: 15, cursor: saving ? "wait" : ballotLocked ? "not-allowed" : "pointer", letterSpacing: 0.5 }}>
+                {saving ? "SUBMITTING..." : ballotLocked ? "BALLOT LOCKED" : `SUBMIT BALLOT (${rankedCount}/${targetCount} RANKED)`}
               </button>
             </>
           )}
